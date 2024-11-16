@@ -1,0 +1,193 @@
+import streamlit as st
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Application Header
+st.title("Leveraged Portfolio Monte-Carlo Simulation")
+st.subheader("Aalto University, Portfolio Management Course Beta-Project")
+st.markdown(
+    "Made by: **Konsta Sutinen, Aaro Tuominen, Elias Vanninen, and Kalle Juven**"
+)
+
+# Sidebar: About the Simulation
+st.sidebar.title("About the Simulation")
+st.sidebar.markdown(
+    """
+This simulation models the performance of a leveraged portfolio using Monte Carlo methods. 
+It incorporates:
+1. **Leveraged Investments**: Returns are amplified using borrowed funds.
+2. **Interest Rates**: Borrowing costs depend on simulated daily interest rates.
+3. **Margin Calls**: If equity value becomes negative, the portfolio is liquidated.
+
+### Math Behind the Simulation:
+1. **Portfolio Value**:
+   \[
+   P_t = (E_{t-1} + L) \times (1 + R_t) - L \times r_t \times \Delta t
+   \]
+   - \(P_t\): Portfolio value at time \(t\).
+   - \(E_{t-1}\): Equity value at time \(t-1\).
+   - \(L\): Loaned capital.
+   - \(R_t\): Daily return.
+   - \(r_t\): Daily interest rate.
+2. **Equity Value**:
+   \[
+   E_t = P_t - L
+   \]
+3. **Interest Rate Simulation**:
+   Simulated using the **Vasicek model**:
+   \[
+   r_{t+1} = r_t + \kappa (r_{\text{mean}} - r_t) \Delta t + \sigma_r \sqrt{\Delta t} \epsilon_t
+   \]
+   - \( \kappa, r_{\text{mean}}, \sigma_r\): Vasicek model parameters.
+   - \(\epsilon_t\): Random noise.
+"""
+)
+
+# User Input Section
+st.sidebar.header("Simulation Parameters")
+initial_investment = st.sidebar.number_input(
+    "Initial Investment ($)", min_value=100, max_value=1_000_000, value=1000, step=100
+)
+leverage_ratio = st.sidebar.slider(
+    "Leverage Ratio (%)", min_value=0, max_value=500, value=100, step=10
+) / 100
+investment_horizon = st.sidebar.slider(
+    "Investment Horizon (Years)", min_value=1, max_value=10, value=10, step=1
+)
+
+if st.sidebar.button("Submit"):
+    loaned_capital = initial_investment * leverage_ratio
+    st.session_state["loaned_capital"] = loaned_capital
+    st.session_state["investment_horizon"] = investment_horizon
+    st.session_state["initial_investment"] = initial_investment
+    st.session_state["simulation_ready"] = True
+if "simulation_ready" in st.session_state and st.session_state["simulation_ready"]:
+    # Simulation Parameters
+    num_simulations = 1000
+    days_per_year = 252
+    dt = 1 / days_per_year
+    investment_horizon_days = st.session_state["investment_horizon"] * days_per_year
+    loaned_capital = st.session_state["loaned_capital"]
+    equity_invested = st.session_state["initial_investment"]
+
+    # Model Parameters
+    mu_base = 0.00036
+    sigma_daily = 0.010805647
+    beta = 0.1
+    r0 = 0.0458
+    r_mean = 0.04610
+    kappa = -0.003794768
+    sigma_r = 0.003141746
+
+    # Arrays to store results
+    equity_values = np.zeros((num_simulations, investment_horizon_days))
+    no_loan_equity_values = np.zeros((num_simulations, investment_horizon_days))
+    interest_rate_paths = np.zeros((num_simulations, investment_horizon_days))
+    margin_called = np.zeros(num_simulations)
+
+    # Monte Carlo Simulation
+    for sim in range(num_simulations):
+        equity_value = equity_invested
+        no_loan_equity_value = equity_invested
+        interest_rate = r0
+
+        for day in range(investment_horizon_days):
+            if equity_value <= 0:
+                equity_value = 0
+                equity_values[sim, day:] = 0
+                margin_called[sim] = 1
+                break
+
+            # Interest rate simulation
+            mean_reversion = kappa * (r_mean - interest_rate) * dt
+            diffusion = sigma_r * np.sqrt(dt) * np.random.normal()
+            interest_rate += mean_reversion + diffusion
+
+            # Adjust drift based on interest rates
+            mu_adjusted = mu_base - beta * (interest_rate - r_mean)
+
+            # Simulate leveraged portfolio
+            portfolio_value = (equity_value + loaned_capital) * (1 + np.random.normal(mu_adjusted, sigma_daily))
+            daily_interest_cost = loaned_capital * interest_rate * dt
+            portfolio_value -= daily_interest_cost
+            equity_value = portfolio_value - loaned_capital
+
+            # Simulate unleveraged portfolio
+            no_loan_equity_value *= (1 + np.random.normal(mu_base, sigma_daily))
+
+            # Save values
+            equity_values[sim, day] = equity_value
+            no_loan_equity_values[sim, day] = no_loan_equity_value
+            interest_rate_paths[sim, day] = interest_rate
+    # Post-simulation analysis
+    final_equity_values = equity_values[:, -1]
+    final_no_loan_equity_values = no_loan_equity_values[:, -1]
+    margin_call_percentage = np.sum(margin_called) / num_simulations * 100
+
+    # Percentiles
+    percentiles = [5, 25, 50, 75, 95]
+    equity_percentile_values = np.percentile(final_equity_values, percentiles)
+    no_loan_percentile_values = np.percentile(final_no_loan_equity_values, percentiles)
+
+    # VaR Calculation
+    var_5 = np.percentile(final_equity_values, 5)
+    var_1 = np.percentile(final_equity_values, 1)
+    var_no_loan_5 = np.percentile(final_no_loan_equity_values, 5)
+    var_no_loan_1 = np.percentile(final_no_loan_equity_values, 1)
+
+    # Results Summary
+    st.subheader("Simulation Results")
+    st.markdown(
+        f"Simulating a leveraged portfolio with the following parameters:"
+        f"\n\n- **Initial Investment**: ${equity_invested:,.2f}"
+        f"\n- **Leverage Ratio**: {leverage_ratio * 100:.1f}%"
+        f"\n- **Investment Horizon**: {investment_horizon} years"
+    )
+    st.markdown(f"**Percentage of Portfolios Margin Called**: {margin_call_percentage:.2f}%")
+
+    # Percentiles Table
+    percentiles_df = pd.DataFrame({
+        "Percentile": [f"{p}%" for p in percentiles],
+        "Equity (Leveraged)": [f"${v:,.2f}" for v in equity_percentile_values],
+        "Equity (Unleveraged)": [f"${v:,.2f}" for v in no_loan_percentile_values],
+    })
+    st.table(percentiles_df)
+
+    # VaR Table
+    var_df = pd.DataFrame({
+        "Portfolio": ["Leveraged", "Unleveraged"],
+        "5% VaR": [f"${var_5:,.2f}", f"${var_no_loan_5:,.2f}"],
+        "1% VaR": [f"${var_1:,.2f}", f"${var_no_loan_1:,.2f}"],
+    })
+    st.table(var_df)
+
+    # Visualization
+    st.subheader("Graphs")
+    # Interest Rate Paths
+    plt.figure(figsize=(10, 6))
+    for i in range(100):
+        plt.plot(np.linspace(0, investment_horizon, investment_horizon_days), interest_rate_paths[i, :], alpha=0.6)
+    plt.title("Simulated Interest Rate Paths")
+    plt.xlabel("Years")
+    plt.ylabel("Interest Rate")
+    st.pyplot(plt)
+
+    # Leveraged Equity Paths
+    plt.figure(figsize=(10, 6))
+    for i in range(100):
+        plt.plot(np.linspace(0, investment_horizon, investment_horizon_days), equity_values[i, :], alpha=0.6)
+    plt.title("Simulated Leveraged Equity Paths")
+    plt.xlabel("Years")
+    plt.ylabel("Equity Value ($)")
+    st.pyplot(plt)
+
+    # Histogram
+    plt.figure(figsize=(10, 6))
+    plt.hist(final_equity_values, bins=50, alpha=0.7, label="Leveraged")
+    plt.hist(final_no_loan_equity_values, bins=50, alpha=0.7, label="Unleveraged")
+    plt.title("Distribution of Final Equity Values")
+    plt.xlabel("Equity Value ($)")
+    plt.ylabel("Frequency")
+    plt.legend()
+    st.pyplot(plt)
